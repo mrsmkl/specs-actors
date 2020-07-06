@@ -29,6 +29,14 @@ type State struct {
 	VestingFunds             cid.Cid         // Array, AMT[ChainEpoch]TokenAmount
 	InitialPledgeRequirement abi.TokenAmount // Sum of initial pledge requirements of all active sectors
 
+	// Memoized power information
+	TotalPower  abi.StoragePower // XXX: Do we need this? Doesn't the power actor save this?
+	FaultyPower abi.StoragePower
+
+	// Number of pending early terminations that the miner needs to deal
+	// with in order to withdraw funds.
+	PendingEarlyTerminations uint64
+
 	// Sectors that have been pre-committed but not yet proven.
 	PreCommittedSectors cid.Cid // Map, HAMT[SectorNumber]SectorPreCommitOnChainInfo
 
@@ -47,32 +55,13 @@ type State struct {
 	// Sector numbers prove-committed since period start, to be added to Deadlines at next proving period boundary.
 	NewSectors *abi.BitField
 
-	// Sector numbers indexed by expiry epoch (which are on proving period boundaries).
-	// Invariant: Keys(Sectors) == union(SectorExpirations.Values())
-	SectorExpirations cid.Cid // Array, AMT[ChainEpoch]Bitfield
+	// New sector numbers indexed by expiry epoch (which are on proving period boundaries).
+	NewSectorExpirations cid.Cid // Array, AMT[ChainEpoch]Bitfield
 
 	// The sector numbers due for PoSt at each deadline in the current proving period, frozen at period start.
 	// New sectors are added and expired ones removed at proving period boundary.
 	// Faults are not subtracted from this in state, but on the fly.
 	Deadlines cid.Cid
-
-	// All currently known faulty sectors, mutated eagerly.
-	// These sectors are exempt from inclusion in PoSt.
-	Faults *abi.BitField
-
-	// Faulty sector numbers indexed by the start epoch of the proving period in which detected.
-	// Used to track fault durations for eventual sector termination.
-	// At most 14 entries, b/c sectors faulty longer expire.
-	// Invariant: Faults == union(FaultEpochs.Values())
-	FaultEpochs cid.Cid // AMT[ChainEpoch]Bitfield
-
-	// Faulty sectors that will recover when next included in a valid PoSt.
-	// Invariant: Recoveries ⊆ Faults.
-	Recoveries *abi.BitField
-
-	// Records successful PoSt submission in the current proving period by partition number.
-	// The presence of a partition number indicates on-time PoSt received.
-	PostSubmissions *abi.BitField
 
 	// The index of the next deadline for which faults should been detected and processed (after it's closed).
 	// The proving period cron handler will always reset this to 0, for the subsequent period.
@@ -149,6 +138,49 @@ type SectorOnChainInfo struct {
 	DealWeight         abi.DealWeight  // Integral of active deals over sector lifetime
 	VerifiedDealWeight abi.DealWeight  // Integral of active verified deals over sector lifetime
 	InitialPledge      abi.TokenAmount // Pledge collected to commit this sector
+}
+
+// A bitfield of sector numbers due at each deadline.
+// The sectors for each deadline are logically grouped into sequential partitions for proving.
+type Deadlines struct {
+	Due [WPoStPeriodDeadlines]cid.Cid // []Deadline
+}
+
+type Deadline struct {
+	Partitions      cid.Cid // AMT[PartitionNumber]Partition
+	PostSubmissions *abi.BitField
+
+	// Maps epochs to partitions with sectors that became faulty during that epoch.
+	FaultsEpochs cid.Cid // AMT[ChainEpoch]BitField
+	// Maps epochs to partitions with sectors that expire in that epoch.
+	ExpirationsEpochs cid.Cid // AMT[ChainEpoch]BitField
+}
+
+type Partition struct {
+	// Sector numbers in this partition, including faulty and terminated sectors
+	Sectors *abi.BitField
+	// Subset of sectors detected/declared faulty and not yet recovered (excl. from PoSt)
+	Faults *abi.BitField
+	// Subset of faulty sectors expected to recover on next PoSt
+	Recoveries *abi.BitField
+	// Subset of sectors terminated but not yet removed from partition (excl. from PoSt)
+	Terminated *abi.BitField
+	// Subset of terminated that were before their committed expiration epoch.
+	// Termination fees have not yet been calculated or paid but effective
+	// power has already been adjusted.
+	EarlyTerminated cid.Cid // AMT[ChainEpoch]BitField
+
+	// Maps epochs to sectors that became faulty during that epoch.
+	FaultsEpochs cid.Cid // AMT[ChainEpoch]BitField
+	// Maps epochs sectors that expire in that epoch.
+	ExpirationsEpochs cid.Cid // AMT[ChainEpoch]BitField
+
+	// Power of not-yet-terminated sectors (incl faulty)
+	TotalPower abi.StoragePower
+	// Power of currently-faulty sectors
+	FaultyPower abi.StoragePower
+	// Sum of initial pledge of sectors
+	TotalPledge abi.TokenAmount
 }
 
 func ConstructState(infoCid cid.Cid, periodStart abi.ChainEpoch, emptyArrayCid, emptyMapCid, emptyDeadlinesCid cid.Cid) (*State, error) {
@@ -857,43 +889,6 @@ func (st *State) SaveDeadlines(store adt.Store, deadlines *Deadlines) error {
 }
 
 //
-// PoSt Deadlines and partitions
-//
-
-type Deadlines struct {
-	// A bitfield of sector numbers due at each deadline.
-	// The sectors for each deadline are logically grouped into sequential partitions for proving.
-	Due [WPoStPeriodDeadlines]*abi.BitField
-}
-
-func ConstructDeadlines() *Deadlines {
-	d := &Deadlines{Due: [WPoStPeriodDeadlines]*abi.BitField{}}
-	for i := range d.Due {
-		d.Due[i] = abi.NewBitField()
-	}
-	return d
-}
-
-// Adds sector numbers to a deadline.
-// The sector numbers are given as uint64 to avoid pointless conversions for bitfield use.
-func (d *Deadlines) AddToDeadline(deadline uint64, newSectors ...uint64) (err error) {
-	ns := bitfield.NewFromSet(newSectors)
-	d.Due[deadline], err = bitfield.MergeBitFields(d.Due[deadline], ns)
-	return err
-}
-
-// Removes sector numbers from all deadlines.
-func (d *Deadlines) RemoveFromAllDeadlines(sectorNos *abi.BitField) (err error) {
-	for i := range d.Due {
-		d.Due[i], err = bitfield.SubtractBitField(d.Due[i], sectorNos)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-//
 // Funds and vesting
 //
 
@@ -1096,6 +1091,37 @@ func (st *State) AssertBalanceInvariants(balance abi.TokenAmount) {
 	Assert(st.PreCommitDeposits.GreaterThanEqual(big.Zero()))
 	Assert(st.LockedFunds.GreaterThanEqual(big.Zero()))
 	Assert(balance.GreaterThanEqual(big.Add(st.PreCommitDeposits, st.LockedFunds)))
+}
+
+//
+// Deadlines
+//
+
+func ConstructDeadlines() *Deadlines {
+	d := &Deadlines{Due: [WPoStPeriodDeadlines]*abi.BitField{}}
+	for i := range d.Due {
+		d.Due[i] = abi.NewBitField()
+	}
+	return d
+}
+
+// Adds sector numbers to a deadline.
+// The sector numbers are given as uint64 to avoid pointless conversions for bitfield use.
+func (d *Deadlines) AddToDeadline(deadline uint64, newSectors ...uint64) (err error) {
+	ns := bitfield.NewFromSet(newSectors)
+	d.Due[deadline], err = bitfield.MergeBitFields(d.Due[deadline], ns)
+	return err
+}
+
+// Removes sector numbers from all deadlines.
+func (d *Deadlines) RemoveFromAllDeadlines(sectorNos *abi.BitField) (err error) {
+	for i := range d.Due {
+		d.Due[i], err = bitfield.SubtractBitField(d.Due[i], sectorNos)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 //

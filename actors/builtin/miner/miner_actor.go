@@ -94,7 +94,10 @@ func (a Actor) Constructor(rt Runtime, params *ConstructorParams) *adt.EmptyValu
 		rt.Abortf(exitcode.ErrIllegalState, "failed to construct initial state: %v", err)
 	}
 
-	emptyDeadlines := ConstructDeadlines()
+	emptyDeadline := ConstructDeadline(emptyArray)
+	emptyDeadlineCid := rt.Store().Put(emptyDeadline)
+
+	emptyDeadlines := ConstructDeadlines(emptyDeadlineCid)
 	emptyDeadlinesCid := rt.Store().Put(emptyDeadlines)
 
 	currEpoch := rt.CurrEpoch()
@@ -1474,23 +1477,55 @@ func scheduleReplaceSectorsExpiration(rt Runtime, st *State, store adt.Store, re
 
 // Removes and returns sector numbers that expire at or before an epoch.
 func popSectorExpirations(st *State, store adt.Store, epoch abi.ChainEpoch) (*abi.BitField, error) {
-	var expiredEpochs []abi.ChainEpoch
-	var expiredSectors []*abi.BitField
-	errDone := fmt.Errorf("done")
-	err := st.ForEachSectorExpiration(store, func(expiry abi.ChainEpoch, sectors *abi.BitField) error {
-		if expiry > epoch {
-			return errDone
-		}
-		expiredSectors = append(expiredSectors, sectors)
-		expiredEpochs = append(expiredEpochs, expiry)
-		return nil
-	})
-	if err != nil && err != errDone {
+	deadlines, err := st.LoadDeadlines(store)
+	if err != nil {
 		return nil, err
 	}
-	err = st.ClearSectorExpirations(store, expiredEpochs...)
+
+	var stopErr := fmt.Errorf("stop")
+
+	var expiredSectors []*abi.BitField
+	err = deadlines.ForEach(store, func(dlIdx uint64, dl *Deadline) error {
+		partitionsWithExpiredSectors, err := dl.PopExpiredPartitions(store, epoch)
+		if err != nil {
+			return err
+		}
+
+		if partitionsWithExpiredSectors.IsEmpty() {
+			return nil
+		}
+
+		partitions, err := adt.AsArray(store, dl.Partitions)
+		if err != nil {
+			return err
+		}
+
+		// For each partition with an expired sector, collect the
+		// expired sectors and remove them from the queues.
+		err = partitionsWithExpiredSectors.ForEach(func(partIdx uint64) error {
+			var partition Partition
+			found, err := partitions.Get(partIdx, &partition)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return fmt.Errorf("missing an expected partition")
+			}
+			partitionExpiredSectors, err := partition.PopExpiredSectors(store, epoch)
+			if err != nil {
+				return err
+			}
+			expiredSectors = append(expiredSectors, partitionExpiredSectors)
+			return partitions.Set(partIdx, &partition)
+		})
+		if err != nil {
+			return err
+		}
+		dl.Partitions, err = partitions.Root()
+		return err
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to clear sector expirations %s: %w", expiredEpochs, err)
+		return nil, err
 	}
 
 	allExpiries, err := bitfield.MultiMerge(expiredSectors...)

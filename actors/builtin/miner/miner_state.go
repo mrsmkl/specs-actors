@@ -55,9 +55,6 @@ type State struct {
 	// Sector numbers prove-committed since period start, to be added to Deadlines at next proving period boundary.
 	NewSectors *abi.BitField
 
-	// New sector numbers indexed by expiry epoch (which are on proving period boundaries).
-	NewSectorExpirations cid.Cid // Array, AMT[ChainEpoch]Bitfield
-
 	// The sector numbers due for PoSt at each deadline in the current proving period, frozen at period start.
 	// New sectors are added and expired ones removed at proving period boundary.
 	// Faults are not subtracted from this in state, but on the fly.
@@ -200,7 +197,6 @@ func ConstructState(infoCid cid.Cid, periodStart abi.ChainEpoch, emptyArrayCid, 
 		Sectors:              emptyArrayCid,
 		ProvingPeriodStart:   periodStart,
 		NewSectors:           abi.NewBitField(),
-		NewSectorExpirations: emptyArrayCid,
 		Deadlines:            emptyDeadlinesCid,
 	}, nil
 }

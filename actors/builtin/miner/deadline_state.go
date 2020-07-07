@@ -2,6 +2,7 @@ package miner
 
 import (
 	"fmt"
+	"io"
 
 	"github.com/filecoin-project/go-bitfield"
 	"github.com/ipfs/go-cid"
@@ -22,14 +23,17 @@ type Deadlines struct {
 }
 
 type Deadline struct {
-	// Partitions in this deadline.
+	// Partitions in this deadline, in order.
+	// The keys of this AMT are always sequential integers beginning with zero.
 	Partitions cid.Cid // AMT[PartitionNumber]Partition
 
 	// Partitions that will be scheduled at the start of the next proving period.
 	// Pending partitions will be _merged_ with existing partitions.
+	// The keys of this AMT are always sequential integers beginning with zero, but the partitions will be
+	// re-numbered when activated.
 	PendingPartitions cid.Cid // AMT[PartitionNumber]Partition
 
-	// Partitions with PoSt submissions since the proving period started.
+	// Partitions numbers with PoSt submissions since the proving period started.
 	PostSubmissions *abi.BitField
 
 	// Number active sectors in the deadline. This number does not include
@@ -126,6 +130,10 @@ func ConstructDeadline(emptyArrayCid cid.Cid) *Deadline {
 	}
 }
 
+func (d *Deadline) PartitionsArray(store adt.Store) (*adt.Array, error) {
+	return adt.AsArray(store, d.Partitions)
+}
+
 func (dl *Deadline) PopExpiredPartitions(store adt.Store, until abi.ChainEpoch) (*bitfield.BitField, error) {
 	stopErr := fmt.Errorf("stop")
 
@@ -164,4 +172,12 @@ func (dl *Deadline) PopExpiredPartitions(store adt.Store, until abi.ChainEpoch) 
 	}
 
 	return partitionsWithExpiredSectors, nil
+}
+
+func (dl *Deadline) MarshalCBOR(w io.Writer) error {
+	panic("implement me")
+}
+
+func (dl *Deadline) UnmarshalCBOR(r io.Reader) error {
+	panic("implement me")
 }

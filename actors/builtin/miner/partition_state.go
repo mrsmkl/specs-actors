@@ -38,6 +38,168 @@ type Partition struct {
 	TotalPledge abi.TokenAmount
 }
 
+func (p *Partition) AddFaults(store adt.Store, sectorNos *abi.BitField, faultEpoch abi.ChainEpoch) (err error) {
+	empty, err := sectorNos.IsEmpty()
+	if err != nil {
+		return err
+	}
+	if empty {
+		return nil
+	}
+
+	{
+		p.Faults, err = bitfield.MergeBitFields(p.Faults, sectorNos)
+		if err != nil {
+			return err
+		}
+
+		count, err := p.Faults.Count()
+		if err != nil {
+			return err
+		}
+		if count > SectorsMax {
+			return fmt.Errorf("too many faults %d, max %d", count, SectorsMax)
+		}
+	}
+	{
+		epochFaultArr, err := adt.AsArray(store, p.FaultsEpochs)
+		if err != nil {
+			return err
+		}
+
+		bf := abi.NewBitField()
+		_, err = epochFaultArr.Get(uint64(faultEpoch), bf)
+		if err != nil {
+			return err
+		}
+
+		bf, err = bitfield.MergeBitFields(bf, sectorNos)
+		if err != nil {
+			return err
+		}
+
+		if err = epochFaultArr.Set(uint64(faultEpoch), bf); err != nil {
+			return err
+		}
+
+		p.FaultsEpochs, err = epochFaultArr.Root()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Removes sector numbers from faults and fault epochs, if present.
+func (p *Partition) RemoveFaults(store adt.Store, sectorNos *abi.BitField) error {
+	if empty, err := sectorNos.IsEmpty(); err != nil {
+		return err
+	} else if empty {
+		return nil
+	}
+
+	if newFaults, err := bitfield.SubtractBitField(p.Faults, sectorNos); err != nil {
+		return err
+	} else {
+		p.Faults = newFaults
+	}
+
+	arr, err := adt.AsArray(store, p.FaultsEpochs)
+	if err != nil {
+		return err
+	}
+
+	type change struct {
+		index uint64
+		value *abi.BitField
+	}
+
+	var (
+		epochsChanged []change
+		epochsDeleted []uint64
+	)
+
+	epochFaultsOld := &abi.BitField{}
+	err = arr.ForEach(epochFaultsOld, func(i int64) error {
+		countOld, err := epochFaultsOld.Count()
+		if err != nil {
+			return err
+		}
+
+		epochFaultsNew, err := bitfield.SubtractBitField(epochFaultsOld, sectorNos)
+		if err != nil {
+			return err
+		}
+
+		countNew, err := epochFaultsNew.Count()
+		if err != nil {
+			return err
+		}
+
+		if countNew == 0 {
+			epochsDeleted = append(epochsDeleted, uint64(i))
+		} else if countOld != countNew {
+			epochsChanged = append(epochsChanged, change{index: uint64(i), value: epochFaultsNew})
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	err = arr.BatchDelete(epochsDeleted)
+	if err != nil {
+		return err
+	}
+
+	for _, change := range epochsChanged {
+		err = arr.Set(change.index, change.value)
+		if err != nil {
+			return err
+		}
+	}
+
+	p.FaultsEpochs, err = arr.Root()
+	return err
+}
+
+// Adds sectors to recoveries.
+func (p *Partition) AddRecoveries(sectorNos *abi.BitField) (err error) {
+	empty, err := sectorNos.IsEmpty()
+	if err != nil {
+		return err
+	}
+	if empty {
+		return nil
+	}
+	p.Recoveries, err = bitfield.MergeBitFields(p.Recoveries, sectorNos)
+	if err != nil {
+		return err
+	}
+
+	count, err := p.Recoveries.Count()
+	if err != nil {
+		return err
+	}
+	if count > SectorsMax {
+		return fmt.Errorf("too many recoveries %d, max %d", count, SectorsMax)
+	}
+	return nil
+}
+
+// Removes sectors from recoveries, if present.
+func (p *Partition) RemoveRecoveries(sectorNos *abi.BitField) (err error) {
+	empty, err := sectorNos.IsEmpty()
+	if err != nil {
+		return err
+	}
+	if empty {
+		return nil
+	}
+	p.Recoveries, err = bitfield.SubtractBitField(p.Recoveries, sectorNos)
+	return err
+}
 
 func (p *Partition) PopExpiredSectors(store adt.Store, until abi.ChainEpoch) (*bitfield.BitField, error) {
 	stopErr := fmt.Errorf("stop")

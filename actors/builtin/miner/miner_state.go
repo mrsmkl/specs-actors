@@ -2,7 +2,6 @@ package miner
 
 import (
 	"fmt"
-	"io"
 	"reflect"
 
 	addr "github.com/filecoin-project/go-address"
@@ -135,7 +134,6 @@ type SectorOnChainInfo struct {
 	InitialPledge      abi.TokenAmount // Pledge collected to commit this sector
 }
 
-
 func ConstructState(infoCid cid.Cid, periodStart abi.ChainEpoch, emptyArrayCid, emptyMapCid, emptyDeadlinesCid cid.Cid) (*State, error) {
 
 	return &State{
@@ -149,10 +147,10 @@ func ConstructState(infoCid cid.Cid, periodStart abi.ChainEpoch, emptyArrayCid, 
 		TotalPower:  abi.NewStoragePower(0),
 		FaultyPower: abi.NewStoragePower(0),
 
-		PreCommittedSectors:  emptyMapCid,
-		Sectors:              emptyArrayCid,
-		ProvingPeriodStart:   periodStart,
-		Deadlines:            emptyDeadlinesCid,
+		PreCommittedSectors: emptyMapCid,
+		Sectors:             emptyArrayCid,
+		ProvingPeriodStart:  periodStart,
+		Deadlines:           emptyDeadlinesCid,
 	}, nil
 }
 
@@ -513,131 +511,12 @@ func (st *State) ClearSectorExpirations(store adt.Store, expirations ...abi.Chai
 
 // Adds sectors numbers to faults and fault epochs.
 func (st *State) AddFaults(store adt.Store, sectorNos *abi.BitField, faultEpoch abi.ChainEpoch) (err error) {
-	empty, err := sectorNos.IsEmpty()
-	if err != nil {
-		return err
-	}
-	if empty {
-		return nil
-	}
-
-	{
-		st.Faults, err = bitfield.MergeBitFields(st.Faults, sectorNos)
-		if err != nil {
-			return err
-		}
-
-		count, err := st.Faults.Count()
-		if err != nil {
-			return err
-		}
-		if count > SectorsMax {
-			return fmt.Errorf("too many faults %d, max %d", count, SectorsMax)
-		}
-	}
-
-	{
-		epochFaultArr, err := adt.AsArray(store, st.FaultEpochs)
-		if err != nil {
-			return err
-		}
-
-		bf := abi.NewBitField()
-		_, err = epochFaultArr.Get(uint64(faultEpoch), bf)
-		if err != nil {
-			return err
-		}
-
-		bf, err = bitfield.MergeBitFields(bf, sectorNos)
-		if err != nil {
-			return err
-		}
-
-		if err = epochFaultArr.Set(uint64(faultEpoch), bf); err != nil {
-			return err
-		}
-
-		st.FaultEpochs, err = epochFaultArr.Root()
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	panic("deprecated")
 }
 
 // Removes sector numbers from faults and fault epochs, if present.
 func (st *State) RemoveFaults(store adt.Store, sectorNos *abi.BitField) error {
-	if empty, err := sectorNos.IsEmpty(); err != nil {
-		return err
-	} else if empty {
-		return nil
-	}
-
-	if newFaults, err := bitfield.SubtractBitField(st.Faults, sectorNos); err != nil {
-		return err
-	} else {
-		st.Faults = newFaults
-	}
-
-	arr, err := adt.AsArray(store, st.FaultEpochs)
-	if err != nil {
-		return err
-	}
-
-	type change struct {
-		index uint64
-		value *abi.BitField
-	}
-
-	var (
-		epochsChanged []change
-		epochsDeleted []uint64
-	)
-
-	epochFaultsOld := &abi.BitField{}
-	err = arr.ForEach(epochFaultsOld, func(i int64) error {
-		countOld, err := epochFaultsOld.Count()
-		if err != nil {
-			return err
-		}
-
-		epochFaultsNew, err := bitfield.SubtractBitField(epochFaultsOld, sectorNos)
-		if err != nil {
-			return err
-		}
-
-		countNew, err := epochFaultsNew.Count()
-		if err != nil {
-			return err
-		}
-
-		if countNew == 0 {
-			epochsDeleted = append(epochsDeleted, uint64(i))
-		} else if countOld != countNew {
-			epochsChanged = append(epochsChanged, change{index: uint64(i), value: epochFaultsNew})
-		}
-
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-
-	err = arr.BatchDelete(epochsDeleted)
-	if err != nil {
-		return err
-	}
-
-	for _, change := range epochsChanged {
-		err = arr.Set(change.index, change.value)
-		if err != nil {
-			return err
-		}
-	}
-
-	st.FaultEpochs, err = arr.Root()
-	return err
+	panic("deprecated")
 }
 
 // Iterates faults by declaration epoch, in order.
@@ -676,39 +555,12 @@ func (st *State) ClearFaultEpochs(store adt.Store, epochs ...abi.ChainEpoch) err
 
 // Adds sectors to recoveries.
 func (st *State) AddRecoveries(sectorNos *abi.BitField) (err error) {
-	empty, err := sectorNos.IsEmpty()
-	if err != nil {
-		return err
-	}
-	if empty {
-		return nil
-	}
-	st.Recoveries, err = bitfield.MergeBitFields(st.Recoveries, sectorNos)
-	if err != nil {
-		return err
-	}
-
-	count, err := st.Recoveries.Count()
-	if err != nil {
-		return err
-	}
-	if count > SectorsMax {
-		return fmt.Errorf("too many recoveries %d, max %d", count, SectorsMax)
-	}
-	return nil
+	panic("deprecated")
 }
 
 // Removes sectors from recoveries, if present.
 func (st *State) RemoveRecoveries(sectorNos *abi.BitField) (err error) {
-	empty, err := sectorNos.IsEmpty()
-	if err != nil {
-		return err
-	}
-	if empty {
-		return nil
-	}
-	st.Recoveries, err = bitfield.SubtractBitField(st.Recoveries, sectorNos)
-	return err
+	panic("deprecated")
 }
 
 // Loads sector info for a sequence of sectors.
@@ -1048,7 +900,6 @@ func (st *State) AssertBalanceInvariants(balance abi.TokenAmount) {
 	Assert(st.LockedFunds.GreaterThanEqual(big.Zero()))
 	Assert(balance.GreaterThanEqual(big.Add(st.PreCommitDeposits, st.LockedFunds)))
 }
-
 
 //
 // Misc helpers

@@ -414,29 +414,63 @@ func (st *State) RemoveNewSectors(sectorNos *abi.BitField) (err error) {
 	return err
 }
 
-// Iterates sector expiration groups in order.
-// Note that the sectors bitfield provided to the callback is not safe to store.
-func (st *State) ForEachSectorExpiration(store adt.Store, until abi.ChainEpoch, f func(expiry abi.ChainEpoch, sectors *abi.BitField) error) error {
+// Removes and returns sector numbers (from the per-deadline expiration queue)
+// that expire at or before an epoch.
+func (st *State) PopExpiredSectors(store adt.Store, epoch abi.ChainEpoch) (*abi.BitField, error) {
 	deadlines, err := st.LoadDeadlines(store)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var expirations
-	deadlines.ForEach(store, func(dlIdx uint64, dl *Deadline) error {
-		arr, err := adt.AsArray(store, dl.ExpirationsEpochs)
+
+	var expiredSectors []*abi.BitField
+	err = deadlines.ForEach(store, func(dlIdx uint64, dl *Deadline) error {
+		partitionsWithExpiredSectors, err := dl.PopExpiredPartitions(store, epoch)
 		if err != nil {
 			return err
 		}
-		var bf bitfield.BitField
-		return arr.ForEach(&bf, func(i int64) error {
-			bfCopy, err := bf.Copy()
+
+		if empty, err := partitionsWithExpiredSectors.IsEmpty(); empty || err != nil {
+			return err
+		}
+
+		partitions, err := adt.AsArray(store, dl.Partitions)
+		if err != nil {
+			return err
+		}
+
+		// For each partition with an expired sector, collect the
+		// expired sectors and remove them from the queues.
+		err = partitionsWithExpiredSectors.ForEach(func(partIdx uint64) error {
+			var partition Partition
+			found, err := partitions.Get(partIdx, &partition)
 			if err != nil {
 				return err
 			}
-			return f(abi.ChainEpoch(i), bfCopy)
+			if !found {
+				return fmt.Errorf("missing an expected partition")
+			}
+			partitionExpiredSectors, err := partition.PopExpiredSectors(store, epoch)
+			if err != nil {
+				return err
+			}
+			expiredSectors = append(expiredSectors, partitionExpiredSectors)
+			return partitions.Set(partIdx, &partition)
 		})
+		if err != nil {
+			return err
+		}
+		dl.Partitions, err = partitions.Root()
+		return err
 	})
+	if err != nil {
+		return nil, err
+	}
 
+	allExpiries, err := bitfield.MultiMerge(expiredSectors...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to union expired sectors: %w", err)
+	}
+	return allExpiries, err
 }
 
 // Adds some sector numbers to the set expiring at an epoch.

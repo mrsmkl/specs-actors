@@ -1475,14 +1475,13 @@ func scheduleReplaceSectorsExpiration(rt Runtime, st *State, store adt.Store, re
 	return nil
 }
 
-// Removes and returns sector numbers that expire at or before an epoch.
-func popSectorExpirations(st *State, store adt.Store, epoch abi.ChainEpoch) (*abi.BitField, error) {
+// Removes and returns sector numbers (from the per-deadline expiration queue)
+// that expire at or before an epoch.
+func (s *State) PopExpiredSectors(st *State, store adt.Store, epoch abi.ChainEpoch) (*abi.BitField, error) {
 	deadlines, err := st.LoadDeadlines(store)
 	if err != nil {
 		return nil, err
 	}
-
-	var stopErr := fmt.Errorf("stop")
 
 	var expiredSectors []*abi.BitField
 	err = deadlines.ForEach(store, func(dlIdx uint64, dl *Deadline) error {
@@ -1491,8 +1490,8 @@ func popSectorExpirations(st *State, store adt.Store, epoch abi.ChainEpoch) (*ab
 			return err
 		}
 
-		if partitionsWithExpiredSectors.IsEmpty() {
-			return nil
+		if empty, err := partitionsWithExpiredSectors.IsEmpty(); empty || err != nil {
+			return err
 		}
 
 		partitions, err := adt.AsArray(store, dl.Partitions)
